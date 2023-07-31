@@ -1,0 +1,97 @@
+version: "1.0"
+services:
+
+  genesis-generation:
+    image: "gcr.io/prysmaticlabs/prysm/cmd/prysmctl:latest"
+    command:
+      - testnet
+      - generate-genesis
+      - --fork=bellatrix
+      - --num-validators=64
+      - --output-ssz=/consensus_data/genesis.ssz
+      - --chain-config-file=/consensus_data/config.yml
+      - --geth-genesis-json-in=/execution_data/genesis.json
+      - --geth-genesis-json-out=/execution_data/genesis.json
+    volumes:
+      - ./consensus_data:/consensus_data
+      - ./execution_data:/execution_data
+
+  genesis-ethereum:
+    image: "ethereum/client-go:latest"
+    command: --datadir=/execution_data init /execution_data/genesis.json
+    volumes:
+      - ./execution_data:/execution_data
+      - ./execution_data/genesis.json:/execution_data/genesis.json
+    depends_on:
+      genesis-generation:
+        condition: service_completed_successfully
+
+  ethereum-node:
+    image: "ethereum/client-go:latest"
+    command:
+      - --http
+      - --http.api=eth,engine,net,web3,txpool,debug
+      - --http.addr=0.0.0.0
+      - --http.corsdomain=*
+      - --http.vhosts=*
+      - --authrpc.vhosts=*
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.jwtsecret=/execution_data/jwtsecret
+      - --datadir=/execution_data
+      - --allow-insecure-unlock
+      - --unlock=0x123463a4b065722e99115d6c222f267d9cabb524
+      - --password=/execution_data/geth_password.txt
+      - --nodiscover
+      - --syncmode=full
+      - --gcmode=archive
+    ports:
+      - 8551:8551
+      - 8545:8545
+    depends_on:
+      genesis-ethereum:
+        condition: service_completed_successfully
+    volumes:
+      - ./execution_data:/execution_data
+      - ./execution_data/geth_password.txt:/execution_data/geth_password.txt
+      - ./jwtsecret:/execution_data/jwtsecret
+
+  chain-beacon:
+    image: "gcr.io/prysmaticlabs/prysm/beacon-chain:latest"
+    command:
+      - --datadir=/consensus_data/beacondata
+      - --min-sync-peers=0
+      - --genesis-state=/consensus_data/genesis.ssz
+      - --bootstrap-node=
+      - --chain-config-file=/consensus_data/config.yml
+      - --chain-id=32382
+      - --rpc-host=0.0.0.0
+      - --contract-deployment-block=0
+      - --grpc-gateway-host=0.0.0.0
+      - --execution-endpoint=http://ethereum-node:8551
+      - --accept-terms-of-use
+      - --jwt-secret=/execution_data/jwtsecret
+      - --suggested-fee-recipient=0x123463a4b065722e99115d6c222f267d9cabb524
+      - --rpc-port=4001
+      - --force-clear-db
+    depends_on:
+      ethereum-node:
+        condition: service_started
+    volumes:
+      - ./consensus_data:/consensus_data
+      - ./jwtsecret:/execution_data/jwtsecret
+
+  validate-node:
+    image: "gcr.io/prysmaticlabs/prysm/validator:latest"
+    command:
+      - --beacon-rpc-provider=chain-beacon:4001
+      - --datadir=/consensus_data/validatordata
+      - --accept-terms-of-use
+      - --interop-num-validators=64
+      - --interop-start-index=0
+      - --chain-config-file=/consensus_data/config.yml
+      - --force-clear-db
+    depends_on:
+      chain-beacon:
+        condition: service_started
+    volumes:
+      - ./consensus_data:/consensus_data
